@@ -5,7 +5,7 @@ import (
 	"log"
 	"math"
 	"path/filepath"
-	"strings"
+//	"strings"
 	"time"
 
 	"github.com/stratux/stratux/sensors/bmp388"
@@ -82,10 +82,10 @@ func pollSensors() {
 
 func initPressureSensor() (ok bool) {
 
-	v, err := i2cbus.ReadByteFromReg(0x76, PRESSURE_WHO_AM_I)
+	v, err := i2cbus.ReadByteFromReg(0x76, PRESSURE_WHO_AM_I)  //BMP280 if SDO is connected LOW
 
 	if err != nil {
-		v, err = i2cbus.ReadByteFromReg(0x77, PRESSURE_WHO_AM_I)
+		v, err = i2cbus.ReadByteFromReg(0x77, PRESSURE_WHO_AM_I)  //BMP280 if SDO is HIGH, and hard coded for BMP180
 	}
 	if err != nil {
 		log.Printf("Error identifying BMP: %s\n", err.Error())
@@ -99,7 +99,7 @@ func initPressureSensor() (ok bool) {
 			return true
 		}
 	} else {
-		log.Printf("using BMP-280")
+		log.Printf("using BMP-180 or BMP-280")
 		bmp, err := sensors.NewBMP280(&i2cbus, 100*time.Millisecond)
 		if err == nil {
 			myPressureReader = bmp
@@ -240,82 +240,91 @@ func sensorAttitudeSender() {
 	timer := time.NewTicker(50 * time.Millisecond) // ~20Hz update.
 	for {
 		// Set sensor gyro calibrations
-		if c, d := &globalSettings.C, &globalSettings.D; d[0]*d[0]+d[1]*d[1]+d[2]*d[2] > 0 {
-			s.SetCalibrations(c, d)
-			// log.Printf("AHRS Info: IMU Calibrations read from settings: accel %6f %6f %6f; gyro %6f %6f %6f\n",
-			//	c[0], c[1], c[2], d[0], d[1], d[2])
-		} else {
+		//if c, d := &globalSettings.C, &globalSettings.D; d[0]*d[0]+d[1]*d[1]+d[2]*d[2] > 0 {
+		//	s.SetCalibrations(c, d)
+		//	// log.Printf("AHRS Info: IMU Calibrations read from settings: accel %6f %6f %6f; gyro %6f %6f %6f\n",
+		//	//	c[0], c[1], c[2], d[0], d[1], d[2])
+		//} else {
 			// Do an initial calibration
-			select { // Don't block if cal isn't receiving: only need one calibration in the queue at a time.
-			case cal <- "cal":
-			default:
-			}
-		}
+		//	select { // Don't block if cal isn't receiving: only need one calibration in the queue at a time.
+		//	case cal <- "cal":
+		//	default:
+		//	}
+		//}
 
 		// Set sensor quaternion
-		if f := &globalSettings.SensorQuaternion; f[0]*f[0]+f[1]*f[1]+f[2]*f[2]+f[3]*f[3] > 0 {
-			s.SetSensorQuaternion(f)
-		} else {
-			select { // Don't block if cal isn't receiving: only need one calibration in the queue at a time.
-			case cal <- "level":
-			default:
-			}
-		}
+		//if f := &globalSettings.SensorQuaternion; f[0]*f[0]+f[1]*f[1]+f[2]*f[2]+f[3]*f[3] > 0 {
+		//	s.SetSensorQuaternion(f)
+		//} else {
+		//	select { // Don't block if cal isn't receiving: only need one calibration in the queue at a time.
+		//	case cal <- "level":
+		//	default:
+		//	}
+		//}
 
 		failNum = 0
 		<-timer.C
-		time.Sleep(950 * time.Millisecond)
+		//time.Sleep(950 * time.Millisecond)
 		for globalSettings.IMU_Sensor_Enabled && globalStatus.IMUConnected {
 			<-timer.C
 
 			// Process calibration and level requests
-			select {
-			case action := <-cal:
-				log.Printf("AHRS Info: cal received action %s\n", action)
-				ahrsCalibrating = true
-				myIMUReader.Read() // Clear out the averages
-				var (
-					nTries uint8
-					cc, dd float64
-				)
-				for (math.Abs(cc-1) > calCLimit || dd > calDLimit) && nTries < numRetries {
-					time.Sleep(1 * time.Second)
-					_, d1, d2, d3, c1, c2, c3, _, _, _, mpuError, _ := myIMUReader.Read()
-					cc = math.Sqrt(c1*c1 + c2*c2 + c3*c3)
-					dd = math.Sqrt(d1*d1 + d2*d2 + d3*d3)
-					nTries++
-					log.Printf("AHRS Info: IMU calibration attempt #%d\n", nTries)
-					if mpuError != nil {
-						log.Printf("AHRS Info: Error reading IMU while calibrating: %s\n", mpuError)
-					} else {
-						if strings.Contains(action, "cal") { // Calibrate gyros
-							globalSettings.D = [3]float64{d1, d2, d3}
-							s.SetCalibrations(nil, &globalSettings.D)
-							log.Printf("AHRS Info: IMU gyro calibration: %3f %3f %3f\n", d1, d2, d3)
-						}
-						if strings.Contains(action, "level") { // Calibrate accel / level
-							globalSettings.C = [3]float64{c1, c2, c3}
-							s.SetCalibrations(&globalSettings.C, nil)
-							globalSettings.SensorQuaternion = *makeOrientationQuaternion(globalSettings.C)
-							s.SetSensorQuaternion(&globalSettings.SensorQuaternion)
-							s.Reset()
-							log.Printf("AHRS Info: IMU accel calibration: %3f %3f %3f\n", c1, c2, c3)
-							log.Printf("AHRS Info: Caged to quaternion %v\n", globalSettings.SensorQuaternion)
-						}
-						saveSettings()
-					}
-				}
-				ahrsCalibrating = false
-				<-timer.C // Make sure we get data for the actual algorithm
-			default:
-			}
+			//select {
+			//case action := <-cal:
+			//	log.Printf("AHRS Info: cal received action %s\n", action)
+			//	ahrsCalibrating = true
+			//	myIMUReader.Read() // Clear out the averages
+			//	var (
+			//		nTries uint8
+			//		cc, dd float64
+			//	)
+			//	for (math.Abs(cc-1) > calCLimit || dd > calDLimit) && nTries < numRetries {
+			//		time.Sleep(1 * time.Second)
+			//		_, d1, d2, d3, c1, c2, c3, _, _, _, mpuError, _ := myIMUReader.Read()
+			//		cc = math.Sqrt(c1*c1 + c2*c2 + c3*c3)
+			//		dd = math.Sqrt(d1*d1 + d2*d2 + d3*d3)
+			//		nTries++
+			//		log.Printf("AHRS Info: IMU calibration attempt #%d\n", nTries)
+			//		if mpuError != nil {
+			//			log.Printf("AHRS Info: Error reading IMU while calibrating: %s\n", mpuError)
+			//		} else {
+			//			if strings.Contains(action, "cal") { // Calibrate gyros
+			//				globalSettings.D = [3]float64{d1, d2, d3}
+			//				s.SetCalibrations(nil, &globalSettings.D)
+			//				log.Printf("AHRS Info: IMU gyro calibration: %3f %3f %3f\n", d1, d2, d3)
+			//			}
+			//			if strings.Contains(action, "level") { // Calibrate accel / level
+			//				globalSettings.C = [3]float64{c1, c2, c3}
+			//				s.SetCalibrations(&globalSettings.C, nil)
+			//				globalSettings.SensorQuaternion = *makeOrientationQuaternion(globalSettings.C)
+			//				s.SetSensorQuaternion(&globalSettings.SensorQuaternion)
+			//				s.Reset()
+			//				log.Printf("AHRS Info: IMU accel calibration: %3f %3f %3f\n", c1, c2, c3)
+			//				log.Printf("AHRS Info: Caged to quaternion %v\n", globalSettings.SensorQuaternion)
+			//			}
+			//			saveSettings()
+			//		}
+			//	}
+			//	ahrsCalibrating = false
+			//	<-timer.C // Make sure we get data for the actual algorithm
+			//default:
+			//}
+
+
+
+
+
+
+
+
+
 
 			// Make the IMU sensor measurements.
 			t = stratuxClock.Time
-			m.T = float64(t.UnixNano()/1000) / 1e6
-			_, m.B1, m.B2, m.B3, m.A1, m.A2, m.A3, m.M1, m.M2, m.M3, mpuError, magError = myIMUReader.Read()
-			m.SValid = mpuError == nil
-			m.MValid = magError == nil
+			m.T = float64(t.UnixNano()/1000) / 1e6  //measurement time
+			_, m.B1, m.B2, m.B3, m.A1, m.A2, m.A3, m.M1, m.M2, m.M3, mpuError, magError = myIMUReader.Read()  //read gyro, accel, magnetometer
+			m.SValid = mpuError == nil  //flag if mpu is valid
+			m.MValid = magError == nil  //flag if magnetometer is valid
 			if mpuError != nil {
 				log.Printf("AHRS Gyro/Accel Error: %s\n", mpuError)
 				failNum++
@@ -335,8 +344,11 @@ func sensorAttitudeSender() {
 				m.MValid = false
 			}
 
+
+
+
 			// Make the GPS measurements.
-			m.TW = float64(mySituation.GPSLastGroundTrackTime.UnixNano()/1000) / 1e6
+			m.TW = float64(mySituation.GPSLastGroundTrackTime.UnixNano()/1000) / 1e6  //gps measurement time
 			m.WValid = isGPSGroundTrackValid()
 			if m.WValid {
 				m.W1 = mySituation.GPSGroundSpeed * math.Sin(float64(mySituation.GPSTrueCourse)*ahrs.Deg)
@@ -348,8 +360,30 @@ func sensorAttitudeSender() {
 				}
 			}
 
-			// Run the AHRS calculations.
+
+
+
+
+
+
+
+
+
+
+
+			// Run the AHRS calculations.  Feed it the measurement vector m.
 			s.Compute(m)
+
+
+
+
+
+
+
+
+
+
+
 
 			// If we have valid AHRS info, then update mySituation.
 			mySituation.muAttitude.Lock()
