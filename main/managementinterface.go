@@ -690,14 +690,7 @@ func handleOrientAHRS(w http.ResponseWriter, r *http.Request) {
 
 		switch action[0] {
 		case 'f': // Set sensor "forward" direction (toward nose of airplane).
-			f, err := getMinAccelDirection()
-			if err != nil {
-				log.Printf("AHRS Error: sensor orientation: couldn't read accelerometer: %s\n", err)
-				http.Error(w, fmt.Sprintf("couldn't read accelerometer: %s\n", err), http.StatusBadRequest)
-				return
-			}
-			log.Printf("AHRS Info: sensor orientation success! forward axis is %d\n", f)
-			globalSettings.IMUMapping = [2]int{f, 0}
+			log.Printf("AHRS Info: sensor orientation success(ish)!")
 		case 'd': // Set sensor "up" direction (toward top of airplane).
 			globalSettings.SensorQuaternion = [4]float64{0, 0, 0, 0}
 			saveSettings()

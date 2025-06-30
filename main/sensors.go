@@ -216,6 +216,37 @@ func initIMU() (ok bool) {
 
 //FIXME: Shoud be moved to managementinterface.go and standardized on management interface port.
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 func sensorAttitudeSender() {
 	var (
 		t                    time.Time
@@ -223,8 +254,8 @@ func sensorAttitudeSender() {
 		mpuError, magError   error
 		failNum              uint8
 	)
-
-	s := ahrs.NewSimpleAHRS()
+	log.Printf("Creating new AHRS Object")
+	s := ahrs.NewAHRS()
 	m := ahrs.NewMeasurement()
 	cal = make(chan (string), 1)
 
@@ -239,83 +270,11 @@ func sensorAttitudeSender() {
 	// Need a sampling freq faster than 10Hz
 	timer := time.NewTicker(50 * time.Millisecond) // ~20Hz update.
 	for {
-		// Set sensor gyro calibrations
-		//if c, d := &globalSettings.C, &globalSettings.D; d[0]*d[0]+d[1]*d[1]+d[2]*d[2] > 0 {
-		//	s.SetCalibrations(c, d)
-		//	// log.Printf("AHRS Info: IMU Calibrations read from settings: accel %6f %6f %6f; gyro %6f %6f %6f\n",
-		//	//	c[0], c[1], c[2], d[0], d[1], d[2])
-		//} else {
-			// Do an initial calibration
-		//	select { // Don't block if cal isn't receiving: only need one calibration in the queue at a time.
-		//	case cal <- "cal":
-		//	default:
-		//	}
-		//}
-
-		// Set sensor quaternion
-		//if f := &globalSettings.SensorQuaternion; f[0]*f[0]+f[1]*f[1]+f[2]*f[2]+f[3]*f[3] > 0 {
-		//	s.SetSensorQuaternion(f)
-		//} else {
-		//	select { // Don't block if cal isn't receiving: only need one calibration in the queue at a time.
-		//	case cal <- "level":
-		//	default:
-		//	}
-		//}
 
 		failNum = 0
 		<-timer.C
-		//time.Sleep(950 * time.Millisecond)
 		for globalSettings.IMU_Sensor_Enabled && globalStatus.IMUConnected {
 			<-timer.C
-
-			// Process calibration and level requests
-			//select {
-			//case action := <-cal:
-			//	log.Printf("AHRS Info: cal received action %s\n", action)
-			//	ahrsCalibrating = true
-			//	myIMUReader.Read() // Clear out the averages
-			//	var (
-			//		nTries uint8
-			//		cc, dd float64
-			//	)
-			//	for (math.Abs(cc-1) > calCLimit || dd > calDLimit) && nTries < numRetries {
-			//		time.Sleep(1 * time.Second)
-			//		_, d1, d2, d3, c1, c2, c3, _, _, _, mpuError, _ := myIMUReader.Read()
-			//		cc = math.Sqrt(c1*c1 + c2*c2 + c3*c3)
-			//		dd = math.Sqrt(d1*d1 + d2*d2 + d3*d3)
-			//		nTries++
-			//		log.Printf("AHRS Info: IMU calibration attempt #%d\n", nTries)
-			//		if mpuError != nil {
-			//			log.Printf("AHRS Info: Error reading IMU while calibrating: %s\n", mpuError)
-			//		} else {
-			//			if strings.Contains(action, "cal") { // Calibrate gyros
-			//				globalSettings.D = [3]float64{d1, d2, d3}
-			//				s.SetCalibrations(nil, &globalSettings.D)
-			//				log.Printf("AHRS Info: IMU gyro calibration: %3f %3f %3f\n", d1, d2, d3)
-			//			}
-			//			if strings.Contains(action, "level") { // Calibrate accel / level
-			//				globalSettings.C = [3]float64{c1, c2, c3}
-			//				s.SetCalibrations(&globalSettings.C, nil)
-			//				globalSettings.SensorQuaternion = *makeOrientationQuaternion(globalSettings.C)
-			//				s.SetSensorQuaternion(&globalSettings.SensorQuaternion)
-			//				s.Reset()
-			//				log.Printf("AHRS Info: IMU accel calibration: %3f %3f %3f\n", c1, c2, c3)
-			//				log.Printf("AHRS Info: Caged to quaternion %v\n", globalSettings.SensorQuaternion)
-			//			}
-			//			saveSettings()
-			//		}
-			//	}
-			//	ahrsCalibrating = false
-			//	<-timer.C // Make sure we get data for the actual algorithm
-			//default:
-			//}
-
-
-
-
-
-
-
 
 
 
@@ -344,28 +303,8 @@ func sensorAttitudeSender() {
 				m.MValid = false
 			}
 
-
-
-
 			// Make the GPS measurements.
 			m.TW = float64(mySituation.GPSLastGroundTrackTime.UnixNano()/1000) / 1e6  //gps measurement time
-			m.WValid = isGPSGroundTrackValid()
-			if m.WValid {
-				m.W1 = mySituation.GPSGroundSpeed * math.Sin(float64(mySituation.GPSTrueCourse)*ahrs.Deg)
-				m.W2 = mySituation.GPSGroundSpeed * math.Cos(float64(mySituation.GPSTrueCourse)*ahrs.Deg)
-				if globalSettings.BMP_Sensor_Enabled && globalStatus.BMPConnected {
-					m.W3 = float64(mySituation.BaroVerticalSpeed * 60 / 6076.12)
-				} else {
-					m.W3 = float64(mySituation.GPSVerticalSpeed) * 3600 / 6076.12
-				}
-			}
-
-
-
-
-
-
-
 
 
 
@@ -389,15 +328,13 @@ func sensorAttitudeSender() {
 			mySituation.muAttitude.Lock()
 			if s.Valid() {
 				roll, pitch, heading = s.RollPitchHeading()
-				mySituation.AHRSRoll = roll / ahrs.Deg
-				mySituation.AHRSPitch = pitch / ahrs.Deg
-				mySituation.AHRSGyroHeading = heading
-				if !isAHRSInvalidValue(heading) {
-					mySituation.AHRSGyroHeading /= ahrs.Deg
-				}
+				mySituation.AHRSRoll = roll * ahrs.R2D
+				mySituation.AHRSPitch = pitch * ahrs.R2D
+				mySituation.AHRSGyroHeading = heading * ahrs.R2D
+
 
 				//TODO westphae: until magnetometer calibration is performed, no mag heading
-				mySituation.AHRSMagHeading = ahrs.Invalid
+				mySituation.AHRSMagHeading = heading * ahrs.R2D
 				mySituation.AHRSSlipSkid = s.SlipSkid()
 				mySituation.AHRSTurnRate = s.RateOfTurn()
 				mySituation.AHRSGLoad = s.GLoad()
@@ -456,6 +393,47 @@ func sensorAttitudeSender() {
 	}
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 func updateExtraLogging() {
 	logMap["GPSNACp"] = float64(mySituation.GPSNACp)
 	logMap["GPSTrueCourse"] = mySituation.GPSTrueCourse
@@ -467,60 +445,6 @@ func updateExtraLogging() {
 	logMap["BaroVerticalSpeed"] = float64(mySituation.BaroVerticalSpeed)
 }
 
-func makeOrientationQuaternion(g [3]float64) (f *[4]float64) {
-	if globalSettings.IMUMapping[0] == 0 { // if unset, default to some standard orientation
-		globalSettings.IMUMapping[0] = -1 // +2 for RY836AI
-	}
-
-	// This is the "forward direction" chosen during the orientation process.
-	var x *[3]float64 = new([3]float64)
-	if globalSettings.IMUMapping[0] < 0 {
-		x[-globalSettings.IMUMapping[0]-1] = -1
-	} else {
-		x[+globalSettings.IMUMapping[0]-1] = +1
-	}
-
-	// Normalize the gravity vector to be 1 G.
-	z, _ := ahrs.MakeUnitVector(g)
-
-	rotmat, _ := ahrs.MakeHardSoftRotationMatrix(*z, *x, [3]float64{0, 0, 1}, [3]float64{1, 0, 0})
-	f = new([4]float64)
-	f[0], f[1], f[2], f[3] = ahrs.RotationMatrixToQuaternion(*rotmat)
-	return
-}
-
-// This is used in the orientation process where the user specifies the forward and up directions.
-func getMinAccelDirection() (i int, err error) {
-	_, _, _, _, a1, a2, a3, _, _, _, err, _ := myIMUReader.ReadOne()
-	if err != nil {
-		return
-	}
-	log.Printf("AHRS Info: sensor orientation accels %1.3f %1.3f %1.3f\n", a1, a2, a3)
-	switch {
-	case math.Abs(a1) > math.Abs(a2) && math.Abs(a1) > math.Abs(a3):
-		if a1 > 0 {
-			i = 1
-		} else {
-			i = -1
-		}
-	case math.Abs(a2) > math.Abs(a3) && math.Abs(a2) > math.Abs(a1):
-		if a2 > 0 {
-			i = 2
-		} else {
-			i = -2
-		}
-	case math.Abs(a3) > math.Abs(a1) && math.Abs(a3) > math.Abs(a2):
-		if a3 > 0 {
-			i = 3
-		} else {
-			i = -3
-		}
-	default:
-		err = fmt.Errorf("couldn't determine biggest accel from %1.3f %1.3f %1.3f", a1, a2, a3)
-	}
-
-	return
-}
 
 // CageAHRS sends a signal to the AHRSProvider that it should recalibrate and reset its level orientation.
 func CageAHRS() {
@@ -577,5 +501,5 @@ func updateAHRSStatus() {
 }
 
 func isAHRSInvalidValue(val float64) bool {
-	return math.Abs(val-ahrs.Invalid) < 0.01
+	return true
 }
