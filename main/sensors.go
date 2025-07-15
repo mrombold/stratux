@@ -246,6 +246,9 @@ func initIMU() (ok bool) {
 
 
 
+////////////////////////////////////////////////////////////
+//  AHRS Run Function
+////////////////////////////////////////////////////////////
 
 func sensorAttitudeSender() {
 	var (
@@ -267,12 +270,11 @@ func sensorAttitudeSender() {
 		defer ahrswebListener.Close()
 	}
 
-	// Need a sampling freq faster than 10Hz
-	timer := time.NewTicker(50 * time.Millisecond) // ~20Hz update.
+
+	timer := time.NewTicker(20 * time.Millisecond) // ~100Hz update.
 	for {
 
 		failNum = 0
-		<-timer.C
 		for globalSettings.IMU_Sensor_Enabled && globalStatus.IMUConnected {
 			<-timer.C
 
@@ -281,7 +283,7 @@ func sensorAttitudeSender() {
 			// Make the IMU sensor measurements.
 			t = stratuxClock.Time
 			m.T = float64(t.UnixNano()/1000) / 1e6  //measurement time
-			_, m.B1, m.B2, m.B3, m.A1, m.A2, m.A3, m.M1, m.M2, m.M3, mpuError, magError = myIMUReader.Read()  //read gyro, accel, magnetometer
+			_, m.B1, m.B2, m.B3, m.A1, m.A2, m.A3, m.M1, m.M2, m.M3, mpuError, magError = myIMUReader.ReadOne()  //read gyro, accel, magnetometer
 			m.SValid = mpuError == nil  //flag if mpu is valid
 			m.MValid = magError == nil  //flag if magnetometer is valid
 			if mpuError != nil {
@@ -312,6 +314,11 @@ func sensorAttitudeSender() {
 
 			// Run the AHRS calculations.  Feed it the measurement vector m.
 			s.Compute(m)
+
+
+
+
+
 
 
 
@@ -360,6 +367,24 @@ func sensorAttitudeSender() {
 				s.Reset()
 			}
 			mySituation.muAttitude.Unlock()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 			makeAHRSGDL90Report() // Send whether or not valid - the function will invalidate the values as appropriate
 			makeAHRSSimReport()
