@@ -285,7 +285,7 @@ func tempAndPressureWorker(ctx context.Context) {
                 myPressureReader = nil
                 globalStatus.BMPConnected = false
                 addSingleSystemErrorf("pressure-sensor-pressure-read",
-                    "Error: too many BMP read failures; disconnecting")
+                    "AHRS Error: too many BMP read failures; disconnecting")
                 return
             }
             continue
@@ -331,7 +331,7 @@ func sensorAttitudeWorker(ctx context.Context) {
 
 	log.Printf("Creating new AHRS Object")
 	s := ahrs.NewAHRS()
-	m := ahrs.NewMeasurement()
+	m := &ahrs.Measurement{}
 	cal = make(chan string, 1)
 
 	// Optional AHRS web listener
@@ -358,6 +358,27 @@ func sensorAttitudeWorker(ctx context.Context) {
 
 		iter++
 
+		for {
+			select {
+			case cmd := <-cal:
+				switch cmd {
+				case "level":
+					s.Level()
+					ahrsCalibrating = false
+				case "cal":
+					ahrsCalibrating = true
+					s.CalibrateMag()
+					ahrsCalibrating = false
+				}
+				// keep draining if multiple pending
+				continue
+			default:
+				// nothing to do
+			}
+			break
+		}
+
+
 		// --- IMU measurement (latest sample) ---
 		t = stratuxClock.Time
 		m.T = float64(t.UnixNano()/1000) / 1e6 // ms
@@ -373,7 +394,7 @@ func sensorAttitudeWorker(ctx context.Context) {
 		// Map vectors into AHRS measurement convention
 		m.B1, m.B2, m.B3 = r.Gyro.X,  r.Gyro.Y,  r.Gyro.Z  // Gyro
 		m.A1, m.A2, m.A3 = r.Accel.X, r.Accel.Y, r.Accel.Z // Accel
-		m.M1, m.M2, m.M3 = r.Mag.X,   r.Mag.Y,   r.Mag.Z   // Mag
+		m.M1, m.M2, m.M3 = r.Mag.Y,   r.Mag.X,   -r.Mag.Z   // Mag
 
 		m.SValid = (mpuError == nil)
 		m.MValid = (magError == nil)
@@ -444,12 +465,6 @@ func sensorAttitudeWorker(ctx context.Context) {
 
 		// --- Logs & publishers every 10 iterations (~0.2s) ---
 		if iter%10 == 0 {
-			log.Printf("IMU raw | ok: mpu=%t mag=%t | gyro=[%.4f %.4f %.4f] accel=[%.4f %.4f %.4f] mag=[%.2f %.2f %.2f] | t=%.3f ms",
-				m.SValid, m.MValid,
-				m.B1, m.B2, m.B3,
-				m.A1, m.A2, m.A3,
-				m.M1, m.M2, m.M3,
-				m.T)
 
 			makeAHRSGDL90Report()
 			makeAHRSSimReport()
@@ -551,5 +566,12 @@ func updateAHRSStatus() {
 }
 
 func isAHRSInvalidValue(val float64) bool {
-	return true
+    if math.IsNaN(val) || math.IsInf(val, 0) {
+        return true
+    }
+    // Treat huge sentinels as invalid (matches ahrs.Invalid and friends)
+    if val > 1e6 || val < -1e6 {
+        return true
+    }
+    return false
 }
