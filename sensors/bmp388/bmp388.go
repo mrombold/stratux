@@ -1,27 +1,21 @@
+// Package bmp388: minimal synchronous driver wired to your registers.go.
 package bmp388
 
-/*
-taken from: https://github.com/tinygo-org/drivers/blob/release/bmp388/bmp388.go
-and converted to use embed
-*/
 import (
 	"errors"
+	"time"
 
 	"github.com/kidoman/embd"
 )
 
 var (
-	errConfigWrite  = errors.New("bmp388: failed to configure sensor, check connection")
-	errConfig       = errors.New("bmp388: there is a problem with the configuration, try reducing ODR")
-	errCaliRead     = errors.New("bmp388: failed to read calibration coefficient register")
-	errSoftReset    = errors.New("bmp388: failed to perform a soft reset")
+	errConfigWrite  = errors.New("bmp388: failed to configure sensor")
+	errConfig       = errors.New("bmp388: configuration error (reduce ODR / adjust OSR/IIR)")
+	errCaliRead     = errors.New("bmp388: failed to read calibration")
+	errSoftReset    = errors.New("bmp388: soft reset failed")
 	ErrNotConnected = errors.New("bmp388: not connected")
 )
 
-type Oversampling byte
-type Mode byte
-type OutputDataRate byte
-type FilterCoefficient byte
 type Config struct {
 	Pressure    Oversampling
 	Temperature Oversampling
@@ -30,21 +24,25 @@ type Config struct {
 	IIR         FilterCoefficient
 }
 
-// BMP388 wraps the I2C connection and configuration values for the BMP388
-type BMP388 struct {
-	Bus     *embd.I2CBus
-	Address uint8
-	cali    calibrationCoefficients
-	Config  Config
+type Reading struct {
+	Time       time.Time
+	TempC      float64 // °C
+	Pressure   float64 // mBar
+}
+
+// Device represents a BMP388 sensor instance.
+type Device struct {
+	bus  embd.I2CBus
+	addr uint8
+	cal  calibrationCoefficients
+	cfg  Config
+	tlin int64
 }
 
 type calibrationCoefficients struct {
-	// Temperature compensation
-	t1 uint16
-	t2 uint16
-	t3 int8
-
-	// Pressure compensation
+	t1  uint16
+	t2  uint16
+	t3  int8
 	p1  int16
 	p2  int16
 	p3  int8
@@ -58,160 +56,182 @@ type calibrationCoefficients struct {
 	p11 int8
 }
 
-func (d *BMP388) Configure(config Config) (err error) {
-	d.Config = config
-
-	if d.Config == (Config{}) {
-		d.Config.Mode = Normal
+// New initializes the device: soft reset, config, and calibration load.
+func New(bus embd.I2CBus, addr uint8, cfg Config) (*Device, error) {
+	d := &Device{bus: bus, addr: addr, cfg: cfg}
+	if d.cfg == (Config{}) {
+		d.cfg.Mode = Normal
 	}
 
-	// Turning on the pressure and temperature sensors and setting the measurement mode
-	err = d.writeRegister(RegPwrCtrl, PwrPress|PwrTemp|byte(d.Config.Mode))
-
-	// Configure the oversampling, output data rate, and iir filter coefficient settings
-	err = d.writeRegister(RegOSR, byte(d.Config.Pressure|d.Config.Temperature<<3))
-	err = d.writeRegister(RegODR, byte(d.Config.ODR))
-	err = d.writeRegister(RegIIR, byte(d.Config.IIR<<1))
-
+	// Basic ID check
+	id, err := d.readRegister(RegChipId, 1)
 	if err != nil {
-		return errConfigWrite
+		return nil, ErrNotConnected
+	}
+	if id[0] != ChipId && id[0] != ChipId390 {
+		return nil, ErrNotConnected
 	}
 
-	// Check if there is a problem with the given configuration
+	// Soft reset: write 0xB6 to RegCmd (0x7E)
+	if err := d.writeRegister(RegCmd, SoftReset); err != nil {
+		return nil, errSoftReset
+	}
+	time.Sleep(2 * time.Millisecond)
+
+	// Power on temp/press + mode
+	if err := d.writeRegister(RegPwrCtrl, PwrPress|PwrTemp|byte(d.cfg.Mode)); err != nil {
+		return nil, errConfigWrite
+	}
+	// OSR / ODR / IIR
+	if err := d.writeRegister(RegOSR, byte(d.cfg.Pressure|(d.cfg.Temperature<<3))); err != nil {
+		return nil, errConfigWrite
+	}
+	if err := d.writeRegister(RegODR, byte(d.cfg.ODR)); err != nil {
+		return nil, errConfigWrite
+	}
+	if err := d.writeRegister(RegIIR, byte(d.cfg.IIR<<1)); err != nil {
+		return nil, errConfigWrite
+	}
+
+	// Check config error once
 	if d.configurationError() {
-		return errConfig
+		return nil, errConfig
 	}
 
-	// Reading the builtin calibration coefficients and parsing them per the datasheet. The compensation formula given
-	// in the datasheet is implemented in floating point
-	buffer, err := d.readRegister(RegCali, 21)
+	// Load calibration block (21 bytes at RegCali)
+	if err := d.loadCalibration(); err != nil {
+		return nil, errCaliRead
+	}
+
+	return d, nil
+}
+
+// Read performs one measurement read (blocking).
+func (d *Device) Read() (Reading, error) {
+	// If in Forced mode, trigger a single conversion
+	if d.cfg.Mode != Normal {
+		if err := d.writeRegister(RegPwrCtrl, PwrPress|PwrTemp|byte(Forced)); err != nil {
+			return Reading{}, err
+		}
+		time.Sleep(8 * time.Millisecond) // small wait; or poll RegStat DRDY bits if you prefer
+	}
+
+	tRaw, err := d.readSensor24(RegTemp)
 	if err != nil {
-		return errCaliRead
+		return Reading{}, err
+	}
+	pRaw, err := d.readSensor24(RegPress)
+	if err != nil {
+		return Reading{}, err
 	}
 
-	d.cali.t1 = uint16(buffer[1])<<8 | uint16(buffer[0])
-	d.cali.t2 = uint16(buffer[3])<<8 | uint16(buffer[2])
-	d.cali.t3 = int8(buffer[4])
+	tlin := d.compTlin(tRaw)
+	// Bosch int math: °C = ((tlin*25)/16384)/100
+	tempC := float64((tlin*25)/16384) / 100.0
+	press := d.compPress(tlin, pRaw)
 
-	d.cali.p1 = int16(buffer[6])<<8 | int16(buffer[5])
-	d.cali.p2 = int16(buffer[8])<<8 | int16(buffer[7])
-	d.cali.p3 = int8(buffer[9])
-	d.cali.p4 = int8(buffer[10])
-	d.cali.p5 = uint16(buffer[12])<<8 | uint16(buffer[11])
-	d.cali.p6 = uint16(buffer[14])<<8 | uint16(buffer[13])
-	d.cali.p7 = int8(buffer[15])
-	d.cali.p8 = int8(buffer[16])
-	d.cali.p9 = int16(buffer[18])<<8 | int16(buffer[17])
-	d.cali.p10 = int8(buffer[19])
-	d.cali.p11 = int8(buffer[20])
+	return Reading{
+		Time:       time.Now(),
+		TempC:      tempC,
+		Pressure: press,
+	}, nil
+}
 
+func (d *Device) Close() error {
+	_ = d.writeRegister(RegPwrCtrl, 0) // sleep
 	return nil
 }
-func (d *BMP388) tlinCompensate() (int64, error) {
-	rawTemp, err := d.readSensorData(RegTemp)
+
+/* ------------ internals ------------ */
+
+func (d *Device) loadCalibration() error {
+	buf, err := d.readRegister(RegCali, 21)
 	if err != nil {
-		return 0, err
+		return err
 	}
+	d.cal.t1 = uint16(buf[1])<<8 | uint16(buf[0])
+	d.cal.t2 = uint16(buf[3])<<8 | uint16(buf[2])
+	d.cal.t3 = int8(buf[4])
 
-	// pulled from C driver: https://github.com/BoschSensortec/BMP3-Sensor-API/blob/master/bmp3.c
-	partialData1 := rawTemp - (256 * int64(d.cali.t1))
-	partialData2 := int64(d.cali.t2) * partialData1
-	partialData3 := (partialData1 * partialData1)
-	partialData4 := partialData3 * int64(d.cali.t3)
-	partialData5 := (partialData2 * 262144) + partialData4
-	return partialData5 / 4294967296, nil
-
+	d.cal.p1 = int16(buf[6])<<8 | int16(buf[5])
+	d.cal.p2 = int16(buf[8])<<8 | int16(buf[7])
+	d.cal.p3 = int8(buf[9])
+	d.cal.p4 = int8(buf[10])
+	d.cal.p5 = uint16(buf[12])<<8 | uint16(buf[11])
+	d.cal.p6 = uint16(buf[14])<<8 | uint16(buf[13])
+	d.cal.p7 = int8(buf[15])
+	d.cal.p8 = int8(buf[16])
+	d.cal.p9 = int16(buf[18])<<8 | int16(buf[17])
+	d.cal.p10 = int8(buf[19])
+	d.cal.p11 = int8(buf[20])
+	return nil
 }
-func (d *BMP388) ReadTemperature() (float64, error) {
 
-	tlin, err := d.tlinCompensate()
-	if err != nil {
-		return 0, err
-	}
-
-	temp := (tlin * 25) / 16384
-	return float64(temp) / 100, nil
+func (d *Device) compTlin(rawTemp int64) int64 {
+	p1 := rawTemp - (256 * int64(d.cal.t1))
+	p2 := int64(d.cal.t2) * p1
+	p3 := p1 * p1
+	p4 := p3 * int64(d.cal.t3)
+	p5 := (p2 * 262144) + p4
+	d.tlin = p5 / 4294967296
+	return d.tlin
 }
-func (d *BMP388) ReadPressure() (float64, error) {
 
-	tlin, err := d.tlinCompensate()
-	if err != nil {
-		return 0, err
-	}
-	rawPress, err := d.readSensorData(RegPress)
-	if err != nil {
-		return 0, err
-	}
+func (d *Device) compPress(tlin, rawPress int64) float64 {
+	pd1 := tlin * tlin
+	pd2 := pd1 / 64
+	pd3 := (pd2 * tlin) / 256
+	pd4 := (int64(d.cal.p8) * pd3) / 32
+	pd5 := (int64(d.cal.p7) * pd1) * 16
+	pd6 := (int64(d.cal.p6) * tlin) * 4194304
+	offset := (int64(d.cal.p5) * 140737488355328) + pd4 + pd5 + pd6
 
-	// code pulled from bmp388 C driver: https://github.com/BoschSensortec/BMP3-Sensor-API/blob/master/bmp3.c
-	partialData1 := tlin * tlin
-	partialData2 := partialData1 / 64
-	partialData3 := (partialData2 * tlin) / 256
-	partialData4 := (int64(d.cali.p8) * partialData3) / 32
-	partialData5 := (int64(d.cali.p7) * partialData1) * 16
-	partialData6 := (int64(d.cali.p6) * tlin) * 4194304
-	offset := (int64(d.cali.p5) * 140737488355328) + partialData4 + partialData5 + partialData6
-	partialData2 = (int64(d.cali.p4) * partialData3) / 32
-	partialData4 = (int64(d.cali.p3) * partialData1) * 4
-	partialData5 = (int64(d.cali.p2) - 16384) * tlin * 2097152
-	sensitivity := ((int64(d.cali.p1) - 16384) * 70368744177664) + partialData2 + partialData4 + partialData5
-	partialData1 = (sensitivity / 16777216) * rawPress
-	partialData2 = int64(d.cali.p10) * tlin
-	partialData3 = partialData2 + (65536 * int64(d.cali.p9))
-	partialData4 = (partialData3 * rawPress) / 8192
+	pd2 = (int64(d.cal.p4) * pd3) / 32
+	pd4 = (int64(d.cal.p3) * pd1) * 4
+	pd5 = (int64(d.cal.p2) - 16384) * tlin * 2097152
+	sens := ((int64(d.cal.p1) - 16384) * 70368744177664) + pd2 + pd4 + pd5
 
-	// dividing by 10 followed by multiplying by 10
-	// To avoid overflow caused by (pressure * partial_data4)
-	partialData5 = (rawPress * (partialData4 / 10)) / 512
-	partialData5 = partialData5 * 10
-	partialData6 = (int64)(uint64(rawPress) * uint64(rawPress))
-	partialData2 = (int64(d.cali.p11) * partialData6) / 65536
-	partialData3 = (partialData2 * rawPress) / 128
-	partialData4 = (offset / 4) + partialData1 + partialData5 + partialData3
-	compPress := ((uint64(partialData4) * 25) / uint64(1099511627776))
-	return float64(compPress) / 10000, nil
+	pd1 = (sens / 16777216) * rawPress
+	pd2 = int64(d.cal.p10) * tlin
+	pd3 = pd2 + (65536 * int64(d.cal.p9))
+	pd4 = (pd3 * rawPress) / 8192
+
+	pd5 = (rawPress * (pd4 / 10)) / 512
+	pd5 = pd5 * 10
+
+	pd6 = int64(uint64(rawPress) * uint64(rawPress))
+	pd2 = (int64(d.cal.p11) * pd6) / 65536
+	pd3 = (pd2 * rawPress) / 128
+
+	pd4 = (offset / 4) + pd1 + pd5 + pd3
+	comp := (uint64(pd4) * 25) / uint64(1099511627776) // Pa * 10000
+	return float64(comp) / 10000.0
 }
-func (d *BMP388) Connected() bool {
-	data, err := d.readRegister(RegChipId, 1)
-	return err == nil && (data[0] == ChipId || data[0] == ChipId390) // returns true if i2c comm was good and response equals 0x50/0x60
-}
-func (d *BMP388) SetMode(mode Mode) error {
-	d.Config.Mode = mode
-	return d.writeRegister(RegPwrCtrl, PwrPress|PwrTemp|byte(d.Config.Mode))
-}
-func (d *BMP388) readSensorData(register byte) (data int64, err error) {
 
-	if !d.Connected() {
-		return 0, ErrNotConnected
-	}
-
-	// put the sensor back into forced mode to get a reading, the sensor goes back to sleep after taking one read in
-	// forced mode
-	if d.Config.Mode != Normal {
-		err = d.SetMode(Forced)
-		if err != nil {
-			return
-		}
-	}
-
-	bytes, err := d.readRegister(register, 3)
-	if err != nil {
-		return
-	}
-	data = int64(bytes[2])<<16 | int64(bytes[1])<<8 | int64(bytes[0])
-	return
-}
-func (d *BMP388) configurationError() bool {
+func (d *Device) configurationError() bool {
 	data, err := d.readRegister(RegErr, 1)
 	return err == nil && (data[0]&0x04) != 0
 }
 
-func (d *BMP388) readRegister(register byte, len int) (data []byte, err error) {
-	data = make([]byte, len)
-	err = (*d.Bus).ReadFromReg(d.Address, register, data)
-	return
+func (d *Device) readSensor24(reg byte) (int64, error) {
+	b, err := d.readRegister(reg, 3)
+	if err != nil {
+		return 0, err
+	}
+	return int64(b[2])<<16 | int64(b[1])<<8 | int64(b[0]), nil
 }
 
-func (d *BMP388) writeRegister(register byte, data byte) error {
-	return (*d.Bus).WriteToReg(d.Address, register, []byte{data})
+func (d *Device) readRegister(register byte, n int) ([]byte, error) {
+	if n <= 0 {
+		return nil, errors.New("readRegister: n<=0")
+	}
+	buf := make([]byte, n)
+	if err := d.bus.ReadFromReg(d.addr, register, buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+func (d *Device) writeRegister(register, data byte) error {
+	return d.bus.WriteByteToReg(d.addr, register, data)
 }

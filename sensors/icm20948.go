@@ -1,98 +1,70 @@
-// Package sensors provides a stratux interface to sensors used for AHRS calculations.
+// Package sensors adapts specific IMUs to the common IMUReader interface.
 package sensors
 
 import (
+	"errors"
+
 	"github.com/kidoman/embd"
 	"github.com/stratux/goflying/icm20948"
 )
 
-const (
-	gyroRange  = 250 // gyroRange is the default range to use for the Gyro.
-	accelRange = 4   // accelRange is the default range to use for the Accel.
-	updateFreq = 50  // updateFreq is the rate at which to update the sensor values.
-)
+// Compile-time check.
+var _ IMUReader = (*ICM20948)(nil)
 
-// ICM20948 represents an InvenSense ICM-20948 attached to the I2C bus and satisfies
-// the IMUReader interface.
 type ICM20948 struct {
-	mpu *icm20948.ICM20948
+	dev *icm20948.Device
 }
 
-// NewICM20948 returns an instance of the ICM-20948 IMUReader, connected to an
-// ICM-20948 attached on the I2C bus with either valid address.
+// NewICM20948 creates a deterministic, synchronous ICM-20948 device and wraps it.
+// It probes 0x68 then 0x69 based on AD0 strap.
 func NewICM20948(i2cbus *embd.I2CBus) (*ICM20948, error) {
-	var (
-		m   ICM20948
-		mpu *icm20948.ICM20948
-		err error
-	)
+	if i2cbus == nil {
+		return nil, errors.New("icm20948: nil i2c bus")
+	}
 
-	mpu, err = icm20948.NewICM20948(i2cbus, gyroRange, accelRange, updateFreq, true, false)
+	cfg := icm20948.Config{
+		GyroRange:  icm20948.Gyro500DPS,
+		AccelRange: icm20948.Accel4G,
+		GyroLPF:    icm20948.GyroLPF51Hz,
+		AccelLPF:   icm20948.AccelLPF50Hz,
+		GyroODRHz:  100, // 1125/(1+10) ≈ 102 Hz after divisor quantization
+		AccelODRHz: 100,
+		Mag:        icm20948.MagCont100Hz,
+	}
+
+	// Probe common addresses.
+	for _, addr := range []byte{0x68, 0x69} {
+		dev, err := icm20948.New(i2cbus, addr, cfg)
+		if err == nil {
+			return &ICM20948{dev: dev}, nil
+		}
+	}
+
+	return nil, errors.New("icm20948: device not found at 0x68/0x69")
+}
+
+// Read returns the latest instantaneous sample (no averaging).
+func (m *ICM20948) Read() (IMUReading, error) {
+	if m.dev == nil {
+		return IMUReading{}, errors.New("icm20948: device not initialized")
+	}
+	s, err := m.dev.Read()
 	if err != nil {
-		return nil, err
+		// IMU errors already embedded in s.IMUError; return top-level too.
+		return IMUReading{}, err
 	}
-
-	// Set Gyro (Accel) LPFs to 25 Hz to filter out prop/glareshield vibrations above 1200 (1260) RPM
-	mpu.SetGyroLPF(25)
-	mpu.SetAccelLPF(25)
-
-	m.mpu = mpu
-	return &m, nil
+	return IMUReading{
+		Time:  s.TimeNS,
+		Gyro:  Vec3{X: s.GxDPS, Y: s.GyDPS, Z: s.GzDPS},
+		Accel: Vec3{X: s.AxG,  Y: s.AyG,  Z: s.AzG},
+		Mag:   Vec3{X: s.MxUT, Y: s.MyUT, Z: s.MzUT},
+		IMUError: s.IMUError,
+		MagError: s.MagError,
+	}, nil
 }
 
-// Read returns the average (since last reading) time, Gyro X-Y-Z, Accel X-Y-Z, Mag X-Y-Z,
-// error reading Gyro/Accel, and error reading Mag.
-func (m *ICM20948) Read() (T int64, G1, G2, G3, A1, A2, A3, M1, M2, M3 float64, GAError, MAGError error) {
-	var (
-		data *icm20948.MPUData
-		i    int8
-	)
-	data = new(icm20948.MPUData)
-
-	for data.N == 0 && i < 5 {
-		data = <-m.mpu.CAvg
-		T = data.T.UnixNano()
-		G1 = data.G1
-		G2 = data.G2
-		G3 = data.G3
-		A1 = data.A1
-		A2 = data.A2
-		A3 = data.A3
-		M1 = data.M1
-		M2 = data.M2
-		M3 = data.M3
-		GAError = data.GAError
-		MAGError = data.MagError
-		i++
-	}
-	return
-}
-
-// ReadOne returns the most recent time, Gyro X-Y-Z, Accel X-Y-Z, Mag X-Y-Z,
-// error reading Gyro/Accel, and error reading Mag.
-func (m *ICM20948) ReadOne() (T int64, G1, G2, G3, A1, A2, A3, M1, M2, M3 float64, GAError, MAGError error) {
-	var (
-		data *icm20948.MPUData
-	)
-	data = new(icm20948.MPUData)
-
-	data = <-m.mpu.C
-	T = data.T.UnixNano()
-	G1 = data.G1
-	G2 = data.G2
-	G3 = data.G3
-	A1 = data.A1
-	A2 = data.A2
-	A3 = data.A3
-	M1 = data.M1
-	M2 = data.M2
-	M3 = data.M3
-	GAError = data.GAError
-	MAGError = data.MagError
-	return
-}
-
-// Close stops reading the MPU.
 func (m *ICM20948) Close() {
-	m.mpu.CloseMPU()
+	if m.dev != nil {
+		m.dev.Close()
+	}
 }

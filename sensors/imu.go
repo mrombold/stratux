@@ -1,17 +1,36 @@
 // Package sensors provides a stratux interface to sensors used for AHRS calculations.
 package sensors
 
-// IMUReader provides an interface to various Inertial Measurement Unit sensors,
-// such as the InvenSense MPU9150 or MPU9250.  It is a light abstraction on top
-// of the current github.com/westphae/goflying MPU9250 driver so that it can accommodate other types
-// of drivers.
+// Vec3 is a simple 3-axis vector.
+type Vec3 struct {
+	X, Y, Z float64
+}
+
+// IMUReading holds one IMU sample (either averaged or most-recent).
+type IMUReading struct {
+	// Time is a monotonic or UNIX-ns timestamp for the reading.
+	Time int64
+
+	// Gyro, Accel, and Mag readings.
+	Gyro  Vec3
+	Accel Vec3
+	Mag   Vec3
+
+	// IMUError is the error (if any) from gyro/accel.
+	// MagError is the error (if any) from magnetometer.
+	// If the overall read failed (I/O, timeout, etc.), the method will also
+	// return a non-nil error in addition to these per-sensor fields.
+	IMUError  error
+	MagError error
+}
+
+// IMUReader provides an interface to various IMU sensors.
+// Read returns the average since the last call; ReadOne returns the most recent sample.
 type IMUReader interface {
-	// Read returns the average (since last reading) time, Gyro X-Y-Z, Accel X-Y-Z, Mag X-Y-Z,
-	// error reading Gyro/Accel, and error reading Mag.
-	Read() (T int64, G1, G2, G3, A1, A2, A3, M1, M2, M3 float64, GAError, MagError error)
-	// ReadOne returns the most recent time, Gyro X-Y-Z, Accel X-Y-Z, Mag X-Y-Z,
-	// error reading Gyro/Accel, and error reading Mag.
-	ReadOne() (T int64, G1, G2, G3, A1, A2, A3, M1, M2, M3 float64, GAError, MagError error)
-	// Close stops reading the MPU.
+	
+	// Read returns the latest reading of the sensor
+	Read() (IMUReading, error)
+
+	// Close releases any resources and stops the device.
 	Close()
 }

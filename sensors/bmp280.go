@@ -2,80 +2,44 @@
 package sensors
 
 import (
-	"errors"
-	"time"
-
 	"github.com/kidoman/embd"
 	"github.com/stratux/goflying/bmp280"
 )
 
-const (
-	bmp280PowerMode   = bmp280.NormalMode
-	bmp280Standby     = bmp280.StandbyTime63ms
-	bmp280FilterCoeff = bmp280.FilterCoeff16
-	bmp280TempRes     = bmp280.Oversamp16x
-	bmp280PressRes    = bmp280.Oversamp16x
-)
+// Ensure BMP280 implements PressureReader.
+var _ PressureReader = (*BMP280)(nil)
 
-// BMP280 represents a BMP280 sensor and implements the PressureSensor interface.
+// BMP280 adapts the bmp280 driver to the PressureReader interface.
 type BMP280 struct {
-	sensor  *bmp280.BMP280
-	data    *bmp280.BMPData
-	running bool
+	dev *bmp280.Device
 }
 
-var errBMP = errors.New("BMP280 Error: BMP280 is not running")
-
-// NewBMP280 looks for a BMP280 connected on the I2C bus having one of the valid addresses and begins reading it.
-func NewBMP280(i2cbus *embd.I2CBus, freq time.Duration) (*BMP280, error) {
-	var (
-		bmp    *bmp280.BMP280
-		errbmp error
-	)
-
-	bmp, errbmp = bmp280.NewBMP280(i2cbus, bmp280.Address1,
-		bmp280PowerMode, bmp280Standby, bmp280FilterCoeff, bmp280TempRes, bmp280PressRes)
-	if errbmp != nil { // Maybe the BMP280 isn't at Address1, try Address2
-		bmp, errbmp = bmp280.NewBMP280(i2cbus, bmp280.Address2,
-			bmp280PowerMode, bmp280Standby, bmp280FilterCoeff, bmp280TempRes, bmp280PressRes)
+// NewBMP280 creates and initializes a BMP280 on the given I²C bus/address.
+// NOTE: The minimal bmp280 driver uses an interface value (embd.I2CBus), not a *interface.
+// If you currently have *embd.I2CBus, just pass *i2cbus here.
+func NewBMP280(i2cbus *embd.I2CBus, addr byte) (*BMP280, error) {
+	// Convert pointer-to-interface to interface value (idiomatic Go).
+	dev, err := bmp280.New(*i2cbus, addr)
+	if err != nil {
+		return nil, err
 	}
-	if errbmp != nil {
-		return nil, errbmp
-	}
-
-	newbmp := BMP280{sensor: bmp, data: new(bmp280.BMPData)}
-	go newbmp.run()
-
-	return &newbmp, nil
+	return &BMP280{dev: dev}, nil
 }
 
-func (bmp *BMP280) run() {
-	bmp.running = true
-	clock := time.NewTicker(100 * time.Millisecond)
-	for bmp.running {
-		<-clock.C
-		bmp.data = <-bmp.sensor.C
+// Temperature returns the temperature in °C.
+func (b *BMP280) Temperature() (float64, error) {
+	r, err := b.dev.Read()
+	if err != nil {
+		return 0, err
 	}
+	return r.TempC, nil
 }
 
-// Temperature returns the current temperature in degrees C measured by the BMP280
-func (bmp *BMP280) Temperature() (float64, error) {
-	if !bmp.running {
-		return 0, errBMP
+// Pressure returns the pressure in mBar (== hPa).
+func (b *BMP280) Pressure() (float64, error) {
+	r, err := b.dev.Read()
+	if err != nil {
+		return 0, err
 	}
-	return bmp.data.Temperature, nil
-}
-
-// Pressure returns the current pressure in mbar measured by the BMP280
-func (bmp *BMP280) Pressure() (float64, error) {
-	if !bmp.running {
-		return 0, errBMP
-	}
-	return bmp.data.Pressure, nil
-}
-
-// Close stops the measurements of the BMP280
-func (bmp *BMP280) Close() {
-	bmp.running = false
-	bmp.sensor.Close()
+	return r.PressurePa / 100.0, nil // Pa -> mBar
 }

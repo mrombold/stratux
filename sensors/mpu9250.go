@@ -2,97 +2,53 @@
 package sensors
 
 import (
+	"errors"
+	"time"
+
 	"github.com/kidoman/embd"
 	"github.com/stratux/goflying/mpu9250"
 )
 
-const (
-	mpu9250GyroRange  = 250 // mpu9250GyroRange is the default range to use for the Gyro.
-	mpu9250AccelRange = 4   // mpu9250AccelRange is the default range to use for the Accel.
-	mpu9250UpdateFreq = 1000  // mpu9250UpdateFreq is the rate at which to update the sensor values.
-)
+var _ IMUReader = (*MPU9250)(nil)
 
-// MPU9250 represents an InvenSense MPU9250 attached to the I2C bus and satisfies
-// the IMUReader interface.
-type MPU9250 struct {
-	mpu *mpu9250.MPU9250
-}
+type MPU9250 struct{ dev *mpu9250.Device }
 
-// NewMPU9250 returns an instance of the MPU9250 IMUReader, connected to an
-// MPU9250 attached on the I2C bus with either valid address.
 func NewMPU9250(i2cbus *embd.I2CBus) (*MPU9250, error) {
-	var (
-		m   MPU9250
-		mpu *mpu9250.MPU9250
-		err error
+	const (
+		addr = 0x68 // 0x69 if AD0 high
 	)
-
-	mpu, err = mpu9250.NewMPU9250(i2cbus, mpu9250GyroRange, mpu9250AccelRange, mpu9250UpdateFreq, true, false)
+	dev, err := mpu9250.New(
+		*i2cbus,
+		addr,
+		mpu9250.Gyro250DPS,
+		mpu9250.Accel4G,
+		mpu9250.ODR100Hz,
+		true,                   // enableMag
+		mpu9250.DLPF_20HZ,      // gyro LPF
+		mpu9250.DLPF_20HZ,      // accel LPF
+	)
 	if err != nil {
 		return nil, err
 	}
-
-	// Set Gyro (Accel) LPFs to 20 (21) Hz to filter out prop/glareshield vibrations above 1200 (1260) RPM
-	mpu.SetGyroLPF(21)
-	mpu.SetAccelLPF(21)
-
-	m.mpu = mpu
-	return &m, nil
+	return &MPU9250{dev: dev}, nil
 }
 
-// Read returns the average (since last reading) time, Gyro X-Y-Z, Accel X-Y-Z, Mag X-Y-Z,
-// error reading Gyro/Accel, and error reading Mag.
-func (m *MPU9250) Read() (T int64, G1, G2, G3, A1, A2, A3, M1, M2, M3 float64, GAError, MAGError error) {
-	var (
-		data *mpu9250.MPUData
-		i    int8
-	)
-	data = new(mpu9250.MPUData)
-
-	for data.N == 0 && i < 5 {
-		data = <-m.mpu.CAvg
-		T = data.T.UnixNano()
-		G1 = data.G1
-		G2 = data.G2
-		G3 = data.G3
-		A1 = data.A1
-		A2 = data.A2
-		A3 = data.A3
-		M1 = data.M1
-		M2 = data.M2
-		M3 = data.M3
-		GAError = data.GAError
-		MAGError = data.MagError
-		i++
+func (m *MPU9250) Read() (IMUReading, error) {
+	if m.dev == nil {
+		return IMUReading{}, errors.New("mpu9250: device not initialized")
 	}
-	return
+	s, err := m.dev.Read()
+	if err != nil {
+		return IMUReading{}, err
+	}
+	return IMUReading{
+		Time:     time.Now().UnixNano(),
+		Gyro:     Vec3{X: s.GxDPS, Y: s.GyDPS, Z: s.GzDPS},
+		Accel:    Vec3{X: s.AxG, Y: s.AyG, Z: s.AzG},
+		Mag:      Vec3{X: s.MxUT, Y: s.MyUT, Z: s.MzUT},
+		IMUError: s.IMUError,
+		MagError: s.MagError,
+	}, nil
 }
 
-// ReadOne returns the most recent time, Gyro X-Y-Z, Accel X-Y-Z, Mag X-Y-Z,
-// error reading Gyro/Accel, and error reading Mag.
-func (m *MPU9250) ReadOne() (T int64, G1, G2, G3, A1, A2, A3, M1, M2, M3 float64, GAError, MAGError error) {
-	var (
-		data *mpu9250.MPUData
-	)
-	data = new(mpu9250.MPUData)
-
-	data = <-m.mpu.C
-	T = data.T.UnixNano()
-	G1 = data.G1
-	G2 = data.G2
-	G3 = data.G3
-	A1 = data.A1
-	A2 = data.A2
-	A3 = data.A3
-	M1 = data.M1
-	M2 = data.M2
-	M3 = data.M3
-	GAError = data.GAError
-	MAGError = data.MagError
-	return
-}
-
-// Close stops reading the MPU.
-func (m *MPU9250) Close() {
-	m.mpu.CloseMPU()
-}
+func (m *MPU9250) Close() { if m.dev != nil { _ = m.dev.Close() } }

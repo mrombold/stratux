@@ -1,6 +1,11 @@
 // Package bmp388 provides a driver for Bosch's BMP388 digital temperature & pressure sensor.
 // The datasheet can be found here: https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmp388-ds001.pdf
 package bmp388
+// Public sensor “enum” types used by the driver and config.
+type Oversampling byte
+type Mode byte
+type OutputDataRate byte
+type FilterCoefficient byte
 
 const Address byte = 0x76 // default I2C address
 

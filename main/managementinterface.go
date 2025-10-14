@@ -432,16 +432,8 @@ func handleSettingsSetRequest(w http.ResponseWriter, r *http.Request) {
 						globalSettings.GPS_Enabled = val.(bool)
 					case "IMU_Sensor_Enabled":
 						globalSettings.IMU_Sensor_Enabled = val.(bool)
-						if !globalSettings.IMU_Sensor_Enabled && globalStatus.IMUConnected {
-							myIMUReader.Close()
-							globalStatus.IMUConnected = false
-						}
 					case "BMP_Sensor_Enabled":
 						globalSettings.BMP_Sensor_Enabled = val.(bool)
-						if !globalSettings.BMP_Sensor_Enabled && globalStatus.BMPConnected {
-							myPressureReader.Close()
-							globalStatus.BMPConnected = false
-						}
 					case "DEBUG":
 						globalSettings.DEBUG = val.(bool)
 					case "DisplayTrafficSource":
